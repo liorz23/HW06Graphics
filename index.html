@@ -2,14 +2,168 @@
 <html>
 	<head>
 		<meta charset="utf-8">
-		<title>HW6 - Bowling Game</title>
+		<title>HW6 - Interactive Bowling Game</title>
 		<style>
-			body { margin: 0; }
+			body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+			canvas { display: block; }
+
+			.panel {
+				position: absolute;
+				color: #fff;
+				background: rgba(20, 20, 40, 0.75);
+				border: 1px solid rgba(255, 255, 255, 0.15);
+				border-radius: 8px;
+				padding: 12px 16px;
+			}
+			.panel h3 {
+				margin: 0 0 8px 0;
+				font-size: 15px;
+				color: #5dade2;
+				border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+				padding-bottom: 4px;
+			}
+
+			#controls {
+				bottom: 20px;
+				left: 20px;
+				font-size: 14px;
+				line-height: 1.7;
+			}
+			#controls .key {
+				display: inline-block;
+				background: #5dade2;
+				color: #102030;
+				font-weight: bold;
+				border-radius: 4px;
+				padding: 1px 7px;
+				margin-right: 6px;
+				min-width: 14px;
+				text-align: center;
+			}
+			#controls .hint { opacity: 0.6; font-size: 12px; margin-top: 6px; }
+
+			#scorecard {
+				top: 20px;
+				left: 50%;
+				transform: translateX(-50%);
+			}
+			#scorecard .frames { display: flex; }
+			.frame {
+				width: 42px;
+				border: 1px solid rgba(255, 255, 255, 0.25);
+				border-left: none;
+				text-align: center;
+				font-size: 13px;
+			}
+			.frame:first-child { border-left: 1px solid rgba(255, 255, 255, 0.25); }
+			.frame.tenth { width: 58px; }
+			.frame.active { background: rgba(93, 173, 226, 0.18); }
+			.frame .num {
+				font-size: 11px;
+				background: rgba(93, 173, 226, 0.3);
+			}
+			.frame .rolls { display: flex; height: 20px; }
+			.frame .rolls span {
+				flex: 1;
+				border-left: 1px solid rgba(255, 255, 255, 0.2);
+				line-height: 20px;
+			}
+			.frame .rolls span:first-child { border-left: none; }
+			.frame .total {
+				height: 20px;
+				line-height: 20px;
+				border-top: 1px solid rgba(255, 255, 255, 0.2);
+				font-weight: bold;
+			}
+			#grand-total {
+				margin-top: 6px;
+				text-align: center;
+				font-size: 13px;
+				color: #5dade2;
+			}
+
+			#powermeter {
+				bottom: 20px;
+				left: 50%;
+				transform: translateX(-50%);
+				width: 280px;
+				text-align: center;
+			}
+			#powermeter .label { font-size: 12px; margin-bottom: 6px; opacity: 0.85; }
+			#power-track {
+				width: 100%;
+				height: 18px;
+				background: rgba(0, 0, 0, 0.5);
+				border: 1px solid rgba(255, 255, 255, 0.25);
+				border-radius: 9px;
+				overflow: hidden;
+			}
+			#power-fill {
+				height: 100%;
+				width: 0%;
+				background: #2ecc71;
+				transition: background-color 0.05s linear;
+			}
+			#powermeter.idle { opacity: 0.4; }
+
+			#announce {
+				position: absolute;
+				top: 38%;
+				left: 50%;
+				transform: translate(-50%, -50%);
+				color: #fff;
+				font-size: 64px;
+				font-weight: bold;
+				letter-spacing: 2px;
+				text-shadow: 0 0 18px rgba(93, 173, 226, 0.9), 0 2px 6px rgba(0,0,0,0.8);
+				opacity: 0;
+				pointer-events: none;
+				transition: opacity 0.35s ease;
+			}
+			#announce.show { opacity: 1; }
 		</style>
 		<script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script>
 	</head>
 	<body>
-		<script src="src/hw6.js" type="module"></script>
+		<div id="scorecard" class="panel">
+			<h3>Scorecard</h3>
+			<div class="frames"></div>
+			<div id="grand-total">Total: 0</div>
+		</div>
 
+		<div id="controls" class="panel">
+			<h3>Controls</h3>
+			<div><span class="key">&larr;</span><span class="key">&rarr;</span>Aim ball</div>
+			<div><span class="key">&uarr;</span><span class="key">&darr;</span>Spin / hook: <span id="spin-state">none</span></div>
+			<div><span class="key">Space</span>Start power &rarr; release</div>
+			<div><span class="key">R</span>Reset / new game</div>
+			<div><span class="key">F</span>Follow-ball camera: <span id="follow-state">on</span></div>
+			<div><span class="key">O</span>Toggle orbit camera: <span id="orbit-state">on</span></div>
+			<div><span class="key">1</span><span class="key">2</span><span class="key">3</span><span class="key">4</span>Camera presets</div>
+			<div class="hint" id="phase-hint">Aim with &larr;/&rarr;, then press Space.</div>
+		</div>
+
+		<div id="powermeter" class="panel idle">
+			<div class="label">POWER</div>
+			<div id="power-track"><div id="power-fill"></div></div>
+		</div>
+
+		<div id="announce"></div>
+
+		<script>
+			const frames = document.querySelector('#scorecard .frames');
+			for (let i = 1; i <= 10; i++) {
+				const rolls = i === 10 ? 3 : 2;
+				const f = document.createElement('div');
+				f.className = i === 10 ? 'frame tenth' : 'frame';
+				f.innerHTML =
+					'<div class="num">' + i + '</div>' +
+					'<div class="rolls">' + '<span></span>'.repeat(rolls) + '</div>' +
+					'<div class="total"></div>';
+				frames.appendChild(f);
+			}
+		</script>
+
+		<script src="src/hw6.js" type="module"></script>
 	</body>
 </html>

@@ -221,6 +221,7 @@ function createPins() {
 }
 
 let ball;
+let sweeperBar;
 function createBall() {
   const group = new THREE.Group();
   const radius = BALL_R;
@@ -275,6 +276,7 @@ createLaneArrows();
 createPinDeck();
 createPins();
 createBall();
+createSweeper();
 
 // ----- camera + orbit controls -----
 camera.position.set(0, 5, 12);
@@ -330,7 +332,7 @@ const grandTotalEl = document.getElementById('grand-total');
 const frameEls = Array.from(document.querySelectorAll('#scorecard .frame'));
 
 // ----- game state -----
-const Phase = { AIMING: 'aiming', POWER: 'power', ROLLING: 'rolling', RESOLVING: 'resolving', GAMEOVER: 'gameover' };
+const Phase = { AIMING: 'aiming', POWER: 'power', ROLLING: 'rolling', RESOLVING: 'resolving', PINSETTER: 'pinsetter', GAMEOVER: 'gameover' };
 const gs = {
   phase: Phase.AIMING,
   frameIndex: 0,
@@ -350,12 +352,14 @@ let crashPlayed = false;
 let resolveTimer = 0;
 let resolved = false;
 let pendingPins = 0;
+let standingPinsBeforeRoll = []; // snapshot used to restore pins on a gutter ball
 
 const PHASE_HINTS = {
   [Phase.AIMING]: 'Aim with ←/→, spin with ↑/↓, then press Space.',
   [Phase.POWER]: 'Press Space to lock power and release!',
   [Phase.ROLLING]: 'Rolling…',
   [Phase.RESOLVING]: 'Counting pins…',
+  [Phase.PINSETTER]: 'Clearing pins…',
   [Phase.GAMEOVER]: 'Game over - press R for a new game.',
 };
 
@@ -576,7 +580,9 @@ function updateAimGuide() {
   if (!show) return;
   const pos = aimGuide.geometry.attributes.position.array;
   let x = gs.aimX, z = READY_Z;
-  const v = launchVelocity(0.7);
+  // during POWER phase show the path for the live power level; otherwise use a mid-power preview
+  const previewPower = gs.phase === Phase.POWER ? gs.power : 0.6;
+  const v = launchVelocity(previewPower);
   let vx = v.x, vz = v.z;
   const dt = 0.03;
   let lastX = x, lastZ = z;
@@ -619,6 +625,8 @@ function releaseBall() {
   crashPlayed = false;
   resolveTimer = 0;
   gs.standingBefore = countStandingPins();
+  // snapshot which pins are standing so we can restore them on a gutter ball
+  standingPinsBeforeRoll = pins.filter((p) => p.userData.standing);
   startRoll();
   setPhase(Phase.ROLLING);
 }
@@ -653,8 +661,9 @@ function updateRolling(dt) {
 
   resolvePinCollisions();
 
-  // roll is over when it gutters, passes the pins, or slows to a stop
-  if (rollInGutter || ball.position.z < PIN_DECK_END_Z || speed < STOP_SPEED) {
+  // roll is over when ball passes the pin deck or slows to a stop
+  // gutter balls are allowed to continue rolling to the end — do NOT stop immediately on gutter entry
+  if (ball.position.z < PIN_DECK_END_Z || speed < STOP_SPEED) {
     enterResolving();
   }
 }
@@ -665,6 +674,55 @@ function enterResolving() {
   resolveTimer = 0;
   resolved = false;
   setPhase(Phase.RESOLVING);
+}
+
+// ----- pinsetter / sweeper animation -----
+const PINSETTER_DURATION = 1.1;  // seconds for the sweeper to cross the pin deck
+let pinsetterTimer = 0;
+
+function createSweeper() {
+  const mat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa, shininess: 50 });
+  sweeperBar = new THREE.Mesh(
+    new THREE.BoxGeometry(LANE_WIDTH + 0.3, 0.7, 0.18),
+    mat,
+  );
+  sweeperBar.position.set(0, LANE_TOP + 0.55, -55.5);
+  sweeperBar.castShadow = true;
+  sweeperBar.receiveShadow = true;
+  sweeperBar.visible = false;
+  scene.add(sweeperBar);
+}
+
+function enterPinsetter() {
+  pinsetterTimer = 0;
+  sweeperBar.position.set(0, LANE_TOP + 0.55, -55.5);
+  sweeperBar.visible = true;
+  // Return the ball to the approach while the sweeper runs
+  ball.userData.vel.set(0, 0, 0);
+  ball.rotation.set(0, 0, 0);
+  ball.position.set(0, LANE_TOP + BALL_R, READY_Z);
+  setPhase(Phase.PINSETTER);
+}
+
+function updatePinsetter(dt) {
+  pinsetterTimer += dt;
+  const t = Math.min(pinsetterTimer / PINSETTER_DURATION, 1.0);
+
+  // sweep bar travels from z=-55.5 to z=-62 (past all pins)
+  sweeperBar.position.z = -55.5 - t * 7.5;
+
+  // slide fallen pins backward and sink them below the deck
+  for (const p of pins) {
+    if (!p.userData.standing) {
+      p.position.z -= 2.5 * dt;
+      p.position.y -= 1.2 * dt;
+    }
+  }
+
+  if (t >= 1.0) {
+    sweeperBar.visible = false;
+    advance(pendingPins);
+  }
 }
 
 // ----- collisions / toppling -----
@@ -734,24 +792,41 @@ function updateResolving(dt) {
   if (!resolved) {
     resolved = true;
     resolveTimer = 0;
-    const standingAfter = countStandingPins();
-    pendingPins = gs.standingBefore - standingAfter;
 
-    if (rollInGutter && pendingPins === 0) {
+    if (rollInGutter) {
+      // Per spec: a gutter ball knocks zero pins regardless of any clip before entering gutter.
+      // Restore any pins that started toppling during the gutter roll.
+      for (const p of standingPinsBeforeRoll) {
+        if (!p.userData.standing) {
+          p.position.set(p.userData.home.x, LANE_TOP, p.userData.home.z);
+          p.rotation.set(0, 0, 0);
+          p.userData.standing = true;
+          p.userData.toppling = false;
+          p.userData.fallDir = null;
+          p.userData.fallAngle = 0;
+          p.userData.propagated = false;
+        }
+      }
+      pendingPins = 0;
       showAnnounce('GUTTER!');
-    } else if (gs.standingBefore === 10 && pendingPins === 10) {
-      showAnnounce('STRIKE!'); playStrike();
-    } else if (gs.standingBefore < 10 && standingAfter === 0) {
-      showAnnounce('SPARE!'); playSpare();
+    } else {
+      const standingAfter = countStandingPins();
+      pendingPins = gs.standingBefore - standingAfter;
+      if (gs.standingBefore === 10 && pendingPins === 10) {
+        showAnnounce('STRIKE!'); playStrike();
+      } else if (gs.standingBefore < 10 && standingAfter === 0) {
+        showAnnounce('SPARE!'); playSpare();
+      }
     }
     recordRoll(pendingPins);
     return;
   }
 
-  // let the ball sit by the pins for a moment
+  // let the ball sit by the pins for a moment, then trigger the pinsetter
   resolveTimer += dt;
   if (resolveTimer < RESOLVE_HOLD) return;
-  advance(pendingPins);
+  // skip the sweeper animation for gutter balls — all pins are already standing
+  if (rollInGutter) { advance(pendingPins); } else { enterPinsetter(); }
 }
 
 function recordRoll(pins) {
@@ -836,6 +911,7 @@ function resetGame() {
   gs.standingBefore = 10;
   rollInGutter = false;
   resolved = false;
+  sweeperBar.visible = false;
   standUpAllPins();
   resetBallToReady();
   renderScorecard(computeScorecard(gs.rolls));
@@ -884,12 +960,13 @@ function animate() {
   if (gs.phase === Phase.ROLLING) updateRolling(dt);
   updateTopples(dt);
   if (gs.phase === Phase.RESOLVING) updateResolving(dt);
+  if (gs.phase === Phase.PINSETTER) updatePinsetter(dt);
   updateAimGuide();
 
   if (followCam && gs.phase === Phase.ROLLING) {
     controls.enabled = false;
     updateFollowCam();
-  } else if (followCam && gs.phase === Phase.RESOLVING) {
+  } else if (followCam && (gs.phase === Phase.RESOLVING || gs.phase === Phase.PINSETTER)) {
     controls.enabled = false;
     updatePinWatchCam();
   } else {

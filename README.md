@@ -73,6 +73,8 @@ scoring.
 - **Ball hook / curve** driven by spin input (**↑ / ↓**) — a sideways acceleration that bends
   the ball's path
 - **On-lane aim guide** that previews the launch direction and curve while aiming
+- **Pinsetter / sweeper animation** — after each roll a mechanical bar sweeps downed pins off
+  the deck before the next ball is returned, with a distinct game phase and camera hold
 - **STRIKE! / SPARE! / GUTTER! / GAME OVER** on-screen announcements
 - **Sound effects** — a rolling rumble, a pin-crash, and a strike chime, all synthesized with
   the Web Audio API (no external audio files)
@@ -80,7 +82,6 @@ scoring.
 ## Known Limitations
 - Physics is intentionally simplified: the ball passes through pins (which topple) rather than
   rigid-body bouncing; the gutter drop is a snap rather than a smooth fall.
-- Pin reset between rolls is instantaneous (no pinsetter/sweeper animation).
 - Collision/curve constants are tuned by hand and can be adjusted at the top of `src/hw6.js`.
 
 ## External Assets
